@@ -1,0 +1,66 @@
+#4단원 Dimensionality Reduction
+install.packages("glmnet")
+install.packages("GA")
+library(glmnet)
+library(GA)
+#performance Evaluation Function
+perf_eval <- function(cm){
+  #True Positive Rate: TPR
+  TPR <- cm[2,2]/sum(cm[2,])
+  #Precision
+  PRE <- cm[2,2]/sum(cm[,2])
+  #True Negative Rate: TNR
+  TNR <- cm[1,1]/sum(cm[1,])
+  #Simple Accuracy
+  ACC <- (cm[1,1]+cm[2,2])/sum(cm)
+  #Balanced Correction Rate
+  BCR <- sqrt(TPR*TNR)
+  #F1- Measure
+  F1 <- 2*TPR*PRE/(TPR+PRE)
+  
+  return(c(TPR, PRE, TNR, ACC, BCR, F1))
+}
+
+Perf_Table <- matrix(0, nrow=8, ncol=6)
+rownames(Perf_Table) <- c("All", "Forward","Backward","Stepwise","GA","Ridge","Lasso","Elastic Net")
+colnames(Perf_Table) <- c("TPR","Precision","TNR","Accurarcy","BCR","F1-Measure")
+
+Ploan <- read.csv("Personal Loan.csv")
+Ploan_input <- Ploan[,-c(1,5,10)]
+Ploan_input_scaled <- scale(Ploan_input, center=TRUE, scale=TRUE)
+Ploan_target <- Ploan$Personal.Loan
+Ploan_data_scaled <- data.frame(Ploan_input_scaled, Ploan_target)
+
+trn_idx <- 1:1500
+tst_idx <- 1510:2500
+
+Ploan_trn <- Ploan_data_scaled[trn_idx,]
+Ploan_tst <- Ploan_data_scaled[tst_idx,]
+
+# -------------------------------Variable Selection method 0: Logistic Regression with all variables
+full_model <- glm(Ploan_target~., family=binomial, Ploan_trn)
+summary(full_model)
+full_model_coeff <- as.matrix(full_model$coefficients,12,1)
+
+#Make prediction
+full_model_prob <- predict(full_model, type="response", newdata=Ploan_tst)
+full_model_prey <- rep(0, nrow(Ploan_tst))
+full_model_prey[which(full_model_prob >= 0.5)] <- 1
+full_model_cm <- table(Ploan_tst$Ploan_target, full_model_prey)
+full_model_cm
+#Performance evaluation
+Perf_Table[1,] <- perf_eval(full_model_cm)
+Perf_Table
+
+#Variable selection method 1: Forward Selection
+tmp_x <- paste(colnames(Ploan_trn)[-12], collapse="+")
+tmp_xy <- paste("Ploan_targe ~", tmp_x, collapse="")
+as.formula(tmp_xy)
+
+forward_model <- step(glm())
+
+
+
+
+
+

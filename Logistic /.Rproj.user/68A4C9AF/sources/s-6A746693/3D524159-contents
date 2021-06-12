@@ -1,0 +1,392 @@
+library(glmnet)
+library(GA)
+library(psych)
+library(moments)
+library(corrplot)
+library(moments)
+library(psych)
+library(corrplot)
+library(ggplot2)
+library(dplyr)
+library(ggplot)
+library(tidyverse)
+  #--------------Logistic Regression
+#performance Evaluation Function
+perf_eval <- function(cm){
+  #True Positive Rate: TPR
+  TPR <- cm[2,2]/sum(cm[2,])
+  #Precision
+  PRE <- cm[2,2]/sum(cm[,2])
+  #True Negative Rate: TNR
+  TNR <- cm[1,1]/sum(cm[1,])
+  #Simple Accuracy
+  ACC <- (cm[1,1]+cm[2,2])/sum(cm)
+  #Balanced Correction Rate
+  BCR <- sqrt(TPR*TNR)
+  #F1- Measure
+  F1 <- 2*TPR*PRE/(TPR+PRE)
+  return(c(TPR, PRE, TNR, ACC, BCR, F1))
+}
+#performance Evaluation Function
+perf_table <- matrix(0, nrow=8, ncol=6)
+rownames(perf_table) <- c("All", "Forward","Backward","Stepwise","GA","Ridge","Lasso","Elastic Net")
+colnames(perf_table) <- c("AUROC","Accuarcy","BCR","F1-Measure","No.Variables","Time")
+
+#Load dataset
+diabetes<- read.csv("diabetes.csv")
+ndata <- nrow(diabetes)
+nvar <- ncol(diabetes)
+diabetes_input <- cbind(diabetes[-9])
+target_idx <- 9
+diabetes_target <- as.factor(diabetes[,target_idx])
+diabetes_data <- data.frame(diabetes_target, diabetes_input)
+diabetes_input_scaled <- scale(diabetes_input, center=TRUE, scale=TRUE)
+diabetes_data
+#데이터 분할해주기 
+set.seed(12345)
+trn_idx <- sample(1:nrow(diabetes_data), round(0.7*nrow(diabetes_data)))
+diabetes_trn <- diabetes_data[trn_idx,] 
+diabetes_tst <- diabetes_data[-trn_idx,]
+#-------------All variables
+full_model <- glm(diabetes_target ~., family=binomial, diabetes_trn)
+summary(full_model)
+full_model_coeff <- as.matrix(full_model$coefficients,9,1)
+perf_table[1,5] <- nrow(full_model_coeff)
+perf_table[1,6] <- NA
+#예측
+#Make prediction
+full_model_prob <- predict(full_model, type="response", newdata=diabetes_tst)
+full_model_prey <- rep(0, nrow(diabetes_tst))
+full_model_prey[which(full_model_prob >= 0.5)] <- 1
+full_model_cm <- table(diabetes_tst$diabetes_target, full_model_prey)
+full_model_cm
+#Performance evaluation
+perf_table[1,(2:4)] <- perf_eval(full_model_cm)[4:6]
+#AUROC
+#내림차순
+Roc1_full <- data.frame(full_model_prob, diabetes_tst$diabetes_target)
+Roc2_full<- arrange(Roc1_full, desc(full_model_prob),diabetes_tst$diabetes_target)
+colnames(Roc2_full) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1_full <- length(which(Roc2_full$diabetes==1))
+FPR1_full <- length(which(Roc2_full$diabetes==0))
+TPR_FPR_full <- cbind(0,0)
+colnames(TPR_FPR_full) <- c("TPR_full","FPR_full")
+TPR2_full = 0 
+FPR2_full = 0
+
+for(i in 1:nrow(Roc2_full)){
+  if(Roc2_full[i,2]==1){
+    TPR2_full <- TPR2_full + 1
+  }else{
+    FPR2_full <- FPR2_full + 1
+  }
+  TPR_tmp_full <- TPR2_full/TPR1_full
+  FPR_tmp_full <- FPR2_full/FPR1_full
+  TPR_FPR_tmp_full <- data.frame(TPR_tmp_full,FPR_tmp_full)
+  colnames(TPR_FPR_tmp_full) <- c("TPR_full","FPR_full")
+  TPR_FPR_full <- rbind(TPR_FPR_full,TPR_FPR_tmp_full)
+}
+#ROC 생성 
+initial <- c("0","0")
+Roc3_full <- rbind(initial,Roc2_full)
+#TPR과 FPR을 묶어주기 
+ROC_data_full <- data.frame(Roc3_full,TPR_FPR_full)
+colnames(ROC_data_full) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+#AUROC 계산을 위한 코드 
+AUROC_full<- TPR_FPR_full %>%
+  arrange(FPR_full) %>%
+  mutate(area_rectangle = (lead(FPR_full)-FPR_full)*pmin(TPR_full,lead(TPR_full)),
+         area_triangle = 0.5 * (lead(FPR_full)-FPR_full)*abs(TPR_full-lead(TPR_full))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+AUROC_full[,1]
+#Performance evaluation
+perf_table[1,1] <- AUROC_full[,1]
+perf_table
+
+
+
+#---------------Forward Selection
+tmp_x <- paste(colnames(diabetes_trn)[-1], collapse = "+")
+tmp_xy <- paste("diabetes_target ~ ", tmp_x, collapse= "")
+as.formula(tmp_xy)
+#forward logistic regression
+start_forward <- proc.time()
+forward_model <- step(glm(diabetes_target ~ 1, family = binomial, diabetes_trn), scope=list(upper=as.formula(tmp_xy),lower=diabetes_target~1), direction="forward",trace=1)
+end_forward <- proc.time()
+time_forward <- start_forward- end_forward
+perf_table[2,6] <- abs(time_forward[3])
+summary(forward_model)
+forward_model_coeff <- as.matrix(forward_model$coefficients,9,1)
+perf_table[2,5] <- nrow(forward_model_coeff)
+#예측
+forward_model_prob <- predict(forward_model, type="response",newdata=diabetes_tst)
+forward_model_prey <- rep(0, nrow(diabetes_tst))
+forward_model_prey[which(forward_model_prob >= 0.5)] <- 1
+forward_model_cm <- table(diabetes_tst$diabetes_target, forward_model_prey)
+forward_model_cm
+#Performance evaluation
+perf_table[2,(2:4)] <- perf_eval(forward_model_cm)[4:6]
+perf_table
+#AUROC
+#내림차순
+Roc1_forward <- data.frame(forward_model_prob, diabetes_tst$diabetes_target)
+Roc2_forward<- arrange(Roc1_forward, desc(forward_model_prob),diabetes_tst$diabetes_target)
+colnames(Roc2_forward) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1_forward <- length(which(Roc2_forward$diabetes==1))
+FPR1_forward<- length(which(Roc2_forward$diabetes==0))
+TPR_FPR_forward <- cbind(0,0)
+colnames(TPR_FPR_forward) <- c("TPR_forward","FPR_forward")
+TPR2_forward = 0 
+FPR2_forward = 0
+
+for(i in 1:nrow(Roc2_forward)){
+  if(Roc2_forward[i,2]==1){
+    TPR2_forward <- TPR2_forward + 1
+  }else{
+    FPR2_forward <- FPR2_forward + 1
+  }
+  TPR_tmp_forward <- TPR2_forward/TPR1_forward
+  FPR_tmp_forward <- FPR2_forward/FPR1_forward
+  TPR_FPR_tmp_forward <- data.frame(TPR_tmp_forward,FPR_tmp_forward)
+  colnames(TPR_FPR_tmp_forward) <- c("TPR_forward","FPR_forward")
+  TPR_FPR_forward <- rbind(TPR_FPR_forward,TPR_FPR_tmp_forward)
+}
+#ROC 생성 
+initial <- c("0","0")
+Roc3_forward <- rbind(initial,Roc2_forward)
+#TPR과 FPR을 묶어주기 
+ROC_data_forward <- data.frame(Roc3_forward,TPR_FPR_forward)
+colnames(ROC_data_forward) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+#AUROC 계산을 위한 코드 
+AUROC_forward<- TPR_FPR_forward %>%
+  arrange(FPR_forward) %>%
+  mutate(area_rectangle = (lead(FPR_forward)-FPR_forward)*pmin(TPR_forward,lead(TPR_forward)),
+         area_triangle = 0.5 * (lead(FPR_forward)-FPR_forward)*abs(TPR_forward-lead(TPR_forward))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+AUROC_forward[,1]
+#Performance evaluation
+perf_table[2,1] <- AUROC_forward[,1]
+perf_table
+
+
+#---------------Backward Selection
+#Backward logistic regression
+start_backward <- proc.time()
+backward_model <- step(glm(full_model, family = binomial, diabetes_trn), scope=list(upper=as.formula(tmp_xy),lower=diabetes_target~1), direction="backward",trace=1)
+end_backward <- proc.time()
+time_backward <- start_backward-end_backward
+perf_table[3,6] <- abs(time_backward[3])
+summary(backward_model)
+backward_model_coeff <- as.matrix(backward_model$coefficients,9,1)
+perf_table[3,5] <- nrow(backward_model_coeff)
+#예측
+backward_model_prob <- predict(backward_model, type="response",newdata=diabetes_tst)
+backward_model_prey <- rep(0, nrow(diabetes_tst))
+backward_model_prey[which(backward_model_prob >= 0.5)] <- 1
+backward_model_cm <- table(diabetes_tst$diabetes_target, backward_model_prey)
+backward_model_cm
+#Performance evaluation
+perf_table[3,(2:4)] <- perf_eval(backward_model_cm)[4:6]
+perf_table
+#AUROC
+#내림차순
+Roc1_backward <- data.frame(backward_model_prob, diabetes_tst$diabetes_target)
+Roc2_backward <- arrange(Roc1_backward, desc(backward_model_prob),diabetes_tst$diabetes_target)
+colnames(Roc2_backward) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1_backward <- length(which(Roc2_backward$diabetes==1))
+FPR1_backward<- length(which(Roc2_backward$diabetes==0))
+TPR_FPR_backward<- cbind(0,0)
+colnames(TPR_FPR_backward) <- c("TPR_backward","FPR_backward")
+TPR2_backward= 0 
+FPR2_backward = 0
+
+for(i in 1:nrow(Roc2_backward)){
+  if(Roc2_backward[i,2]==1){
+    TPR2_backward <- TPR2_backward + 1
+  }else{
+    FPR2_backward <- FPR2_backward + 1
+  }
+  TPR_tmp_backward <- TPR2_backward/TPR1_backward
+  FPR_tmp_backward <- FPR2_backward/FPR1_backward
+  TPR_FPR_tmp_backward <- data.frame(TPR_tmp_backward,FPR_tmp_backward)
+  colnames(TPR_FPR_tmp_backward) <- c("TPR_backward","FPR_backward")
+  TPR_FPR_backward <- rbind(TPR_FPR_backward,TPR_FPR_tmp_backward)
+}
+#ROC 생성 
+initial <- c("0","0")
+Roc3_backward <- rbind(initial,Roc2_backward)
+#TPR과 FPR을 묶어주기 
+ROC_data_backward <- data.frame(Roc3_backward,TPR_FPR_backward)
+colnames(ROC_data_backward) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+#AUROC 계산을 위한 코드 
+AUROC_backward<- TPR_FPR_backward %>%
+  arrange(FPR_backward) %>%
+  mutate(area_rectangle = (lead(FPR_backward)-FPR_backward)*pmin(TPR_backward,lead(TPR_backward)),
+         area_triangle = 0.5 * (lead(FPR_backward)-FPR_backward)*abs(TPR_backward-lead(TPR_backward))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+AUROC_backward[,1]
+#Performance evaluation
+perf_table[3,1] <- AUROC_backward[,1]
+perf_table
+
+
+
+#------Stepwise Selection
+#Stepwise logistic regression
+start_step <- proc.time()
+step_model <- step(glm(diabetes_target ~ 1 , family = binomial, diabetes_trn), scope=list(upper=as.formula(tmp_xy),lower=diabetes_target~1), direction="both",trace=1)
+end_step <- proc.time()
+time_step <- start_step-end_step
+perf_table[4,6] <- abs(time_step[3])
+summary(step_model)
+step_model_coeff <- as.matrix(step_model$coefficients,9,1)
+perf_table[4,5] <- nrow(step_model_coeff)
+#예측
+step_model_prob <- predict(step_model, type="response",newdata=diabetes_tst)
+step_model_prey <- rep(0, nrow(diabetes_tst))
+step_model_prey[which(step_model_prob >= 0.5)] <- 1
+step_model_cm <- table(diabetes_tst$diabetes_target, step_model_prey)
+step_model_cm
+#Performance evaluation
+perf_table[4,(2:4)] <- perf_eval(step_model_cm)[4:6]
+perf_table
+#AUROC
+#내림차순
+Roc1_step<- data.frame(step_model_prob, diabetes_tst$diabetes_target)
+Roc2_step <- arrange(Roc1_step, desc(step_model_prob),diabetes_tst$diabetes_target)
+colnames(Roc2_step) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1_step <- length(which(Roc2_step$diabetes==1))
+FPR1_step<- length(which(Roc2_step$diabetes==0))
+TPR_FPR_step<- cbind(0,0)
+colnames(TPR_FPR_step) <- c("TPR_step","FPR_step")
+TPR2_step= 0 
+FPR2_step = 0
+
+for(i in 1:nrow(Roc2_step)){
+  if(Roc2_step[i,2]==1){
+    TPR2_step <- TPR2_step + 1
+  }else{
+    FPR2_step <- FPR2_step + 1
+  }
+  TPR_tmp_step <- TPR2_step/TPR1_step
+  FPR_tmp_step <- FPR2_step/FPR1_step
+  TPR_FPR_tmp_step <- data.frame(TPR_tmp_step,FPR_tmp_step)
+  colnames(TPR_FPR_tmp_step) <- c("TPR_step","FPR_step")
+  TPR_FPR_step <- rbind(TPR_FPR_step,TPR_FPR_tmp_step)
+}
+#ROC 생성 
+initial <- c("0","0")
+Roc3_step <- rbind(initial,Roc2_step)
+#TPR과 FPR을 묶어주기 
+ROC_data_step <- data.frame(Roc3_step,TPR_FPR_step)
+colnames(ROC_data_step) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+
+
+#AUROC 계산을 위한 코드 
+AUROC_step<- TPR_FPR_step %>%
+  arrange(FPR_step) %>%
+  mutate(area_rectangle = (lead(FPR_step)-FPR_step)*pmin(TPR_step,lead(TPR_step)),
+         area_triangle = 0.5 * (lead(FPR_step)-FPR_step)*abs(TPR_step-lead(TPR_step))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+AUROC_backward[,1]
+#Performance evaluation
+perf_table[4,1] <- AUROC_step[,1]
+perf_table
+
+
+#-------Genetic Algorithm
+#Fitness function: F1 for the training dataset
+fit_F1 <- function(string){
+  sel_var_idx <- which(string==1)
+  #1인 변수들만 사용한다
+  sel_x <- x[, sel_var_idx]
+  xy <- data.frame(sel_x,y)
+  #Training the model
+  GA_lr <- glm(y~., family=binomial, data=xy)
+  GA_lr_prob <- predict(GA_lr, type="response", newdata=xy)
+  GA_lr_prey <- rep(0, length(y))
+  GA_lr_prey[which(GA_lr_prob >= 0.5)] <- 1
+  GA_lr_cm <- matrix(0, nrow=2, ncol=2)
+  GA_lr_cm[1,1] <- length(which(y==0 & GA_lr_prey==0))
+  GA_lr_cm[1,2] <- length(which(y==0 & GA_lr_prey ==1))
+  GA_lr_cm[2,1] <- length(which(y==1 & GA_lr_prey==0))
+  GA_lr_cm[2,2] <- length(which(y==1 & GA_lr_prey==1))
+  GA_perf <- perf_eval(GA_lr_cm)
+  return(GA_perf[6])
+}
+x <-as.matrix(diabetes_trn[,-1])
+y <- diabetes_trn[,1]
+start_GA <- proc.time()
+GA_F1 <- ga(type="binary", fitness=fit_F1, nBits= ncol(x), names=colnames(x), popSize=50, pcrossover=0.5, pmutation=0.01, maxiter=100, elitism=2, seed=123)
+end_GA <- proc.time()
+time_GA <- start_GA- end_GA
+perf_table[5,6] <- abs(time_GA[3])
+
+#최적의 변수들로 모델 train 시키기
+best_var_idx <- which(GA_F1@solution==1)
+GA_trn_data <- diabetes_trn[,c(best_var_idx,9)]
+GA_tst_data <- diabetes_tst[,c(best_var_idx,9)]
+GA_model <- glm(diabetes_target~., family=binomial, GA_trn_data)
+summary(GA_model)
+GA_model_coeff <- as.matrix(GA_model$coefficients, 9,1)
+perf_table[5,5] <- nrow(GA_model_coeff)
+#예측
+GA_model_prob <- predict(GA_model, type="response",newdata=diabetes_tst)
+GA_model_prey <- rep(0, nrow(diabetes_tst))
+GA_model_prey[which(GA_model_prob >= 0.5)] <- 1
+GA_model_cm <- table(diabetes_tst$diabetes_target, GA_model_prey)
+GA_model_cm
+#Performance evaluation
+perf_table[5,(2:4)] <- perf_eval(GA_model_cm)[4:6]
+perf_table
+#AUROC
+#내림차순
+Roc1_GA<- data.frame(GA_model_prob, diabetes_tst$diabetes_target)
+Roc2_GA <- arrange(Roc1_GA, desc(GA_model_prob),diabetes_tst$diabetes_target)
+colnames(Roc2_GA) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1_GA <- length(which(Roc2_GA$diabetes==1))
+FPR1_GA<- length(which(Roc2_GA$diabetes==0))
+TPR_FPR_GA<- cbind(0,0)
+colnames(TPR_FPR_GA) <- c("TPR_GA","FPR_GA")
+TPR2_GA= 0 
+FPR2_GA = 0
+
+for(i in 1:nrow(Roc2_GA)){
+  if(Roc2_GA[i,2]==1){
+    TPR2_GA <- TPR2_GA + 1
+  }else{
+    FPR2_GA <- FPR2_GA + 1
+  }
+  TPR_tmp_GA <- TPR2_GA/TPR1_GA
+  FPR_tmp_GA <- FPR2_GA/FPR1_GA
+  TPR_FPR_tmp_GA <- data.frame(TPR_tmp_GA,FPR_tmp_GA)
+  colnames(TPR_FPR_tmp_GA) <- c("TPR_GA","FPR_GA")
+  TPR_FPR_GA <- rbind(TPR_FPR_GA,TPR_FPR_tmp_GA)
+}
+#ROC 생성 
+initial <- c("0","0")
+Roc3_GA <- rbind(initial,Roc2_GA)
+#TPR과 FPR을 묶어주기 
+ROC_data_GA <- data.frame(Roc3_GA,TPR_FPR_GA)
+colnames(ROC_data_GA)<- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+#AUROC 계산을 위한 코드 
+AUROC_GA<- TPR_FPR_GA %>%
+  arrange(FPR_GA) %>%
+  mutate(area_rectangle = (lead(FPR_GA)-FPR_GA)*pmin(TPR_GA,lead(TPR_GA)),
+         area_triangle = 0.5 * (lead(FPR_GA)-FPR_GA)*abs(TPR_GA-lead(TPR_GA))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+AUROC_GA[,1]
+#Performance evaluation
+perf_table[5,1] <- AUROC_GA[,1]
+perf_table
+
+
+
+
+
+

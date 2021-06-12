@@ -1,0 +1,342 @@
+library(moments)
+library(psych)
+library(corrplot)
+library(ggplot2)
+library(dplyr)
+library(ggplot)
+library(tidyverse)
+install.packages("tidyverse")
+install.packages("ggplot2")
+install.packages("colorspace")
+install.packages("ggplot")
+
+
+#initialize the performance matrix
+perf_mat <- matrix(0,1,6)
+colnames(perf_mat) <- c("TPR(Recall)","Presicion", "TNR", "ACC","BCR","F1")
+rownames(perf_mat) <- "Logistic Regression"
+
+#Load dataset
+diabetes<- read.csv("diabetes.csv")
+ndata <- nrow(diabetes)
+nvar <- ncol(diabetes)
+#boxplot 및 summary함수 
+for (i in 1:nvar){
+  boxplot(diabetes[,i], main=names(diabetes)[i])
+}
+describe(diabetes)
+
+#이상치가 높은 변수들을 제거해주기.
+input_idx <- c(1,2,3,4,6,8)
+target_idx <- 9
+diabetes_input <- diabetes[, input_idx]
+diabetes_target <- as.factor(diabetes[,target_idx])
+diabetes_data <- data.frame(diabetes_target, diabetes_input)
+
+#Normalization
+diabets_input <- diabetes[,input_idx]
+diabetes_input <- scale(diabetes_input, center=TRUE, scale=TRUE)
+diabets_target <- diabetes[,target_idx]
+diabetes_data <- data.frame(diabetes_input, diabetes_target)
+#correlation 계산
+diabetes_data2 <- cbind(diabetes_data[-7])
+corr_diabetes <- cor(diabetes_data2)
+round(corr_diabetes,2)
+corrplot(corr_diabetes,is.corr=FALSE, method="number")
+#scatter plot matrix
+pairs(~Pregnancies+Glucose+BloodPressure+SkinThickness+BMI+Age,data=diabetes_data)
+
+#데이터 분할해주기 
+set.seed(12345)
+trn_idx <- sample(1:nrow(diabetes_data), round(0.7*nrow(diabetes_data)))
+diabetes_trn <- diabetes_data[trn_idx,] 
+diabetes_tst <- diabetes_data[-trn_idx,]
+#로지스틱 회귀분석 실행 코드 
+full_lr <- glm(diabetes_target ~., family=binomial, diabetes_trn)
+summary(full_lr)
+
+#Test the model and evaluation
+lr_response <- predict(full_lr, type="response", newdata=diabetes_tst)
+lr_target <- diabetes_tst$diabetes_target
+lr_predicted <- rep(0, length(lr_target))
+lr_predicted[which(lr_response >=0.5)] <- 1
+cm_full <- table(lr_target, lr_predicted)
+cm_full
+#performance Evaluation Function
+perf_eval2 <- function(cm){
+  #True Positive Rate: TPR
+  TPR <- cm[2,2]/sum(cm[2,])
+  #Precision
+  PRE <- cm[2,2]/sum(cm[,2])
+  #True Negative Rate: TNR
+  TNR <- cm[1,1]/sum(cm[1,])
+  #Simple Accuracy
+  ACC <- (cm[1,1]+cm[2,2])/sum(cm)
+  #Balanced Correction Rate
+  BCR <- sqrt(TPR*TNR)
+  #F1- Measure
+  F1 <- 2*TPR*PRE/(TPR+PRE)
+  
+  return(c(TPR, PRE, TNR, ACC, BCR, F1))
+}
+perf_mat[1,] <- perf_eval2(cm_full)
+perf_mat
+
+#AUROC
+#lr_response를 기준으로 내림차순
+Roc1 <- data.frame(lr_response, diabetes_tst$diabetes_target)
+Roc2<- arrange(Roc1, desc(lr_response),diabetes_tst$diabetes_target)
+colnames(Roc2) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR1 <- length(which(Roc2$diabetes==1))
+FPR1 <- length(which(Roc2$diabetes==0))
+TPR_FPR <- cbind(0,0)
+colnames(TPR_FPR) <- c("TPR","FPR")
+TPR2 = 0 
+FPR2 = 0
+
+for(i in 1:nrow(Roc2)){
+  if(Roc2[i,2]==1){
+    TPR2 <- TPR2 + 1
+  }else{
+    FPR2 <- FPR2 + 1
+  }
+  TPR_tmp <- TPR2/TPR1
+  FPR_tmp <- FPR2/FPR1
+  TPR_FPR_tmp <- data.frame(TPR_tmp,FPR_tmp)
+  colnames(TPR_FPR_tmp) <- c("TPR","FPR")
+  TPR_FPR <- rbind(TPR_FPR,TPR_FPR_tmp)
+}
+
+#ROC 생성 
+initial <- c("0","0")
+Roc3 <- rbind(initial,Roc2)
+Roc3
+
+#TPR과 FPR을 묶어주기 
+ROC_data <- data.frame(Roc3,TPR_FPR)
+colnames(ROC_data) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+
+#ROC 그래프 그리기 
+ggplot(data = ROC_data, aes(x=`FPR(1-Specificity)`,y=`TPR(Sensitivity)`))+geom_line(color="red")+geom_abline(color = "blue", linetype = "dashed")
+
+#AUROC 계산을 위한 코드 
+TPR_FPR %>%
+  arrange(FPR) %>%
+  mutate(area_rectangle = (lead(FPR)-FPR)*pmin(TPR,lead(TPR)),
+         area_triangle = 0.5 * (lead(FPR)-FPR)*abs(TPR-lead(TPR))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+
+
+
+#Train data set에 대한 AUROC
+#lr_response2를 기준으로 내림차순
+lr_response2 <- predict(full_lr, type="response", newdata=diabetes_trn)
+lr_target2 <- diabetes_trn $diabetes_target
+lr_predicted2 <- rep(0, length(lr_target2))
+lr_predicted2[which(lr_response2 >=0.5)] <- 1
+Roc4 <- data.frame(lr_response2, diabetes_trn$diabetes_target)
+Roc5<- arrange(Roc4, desc(lr_response2),diabetes_trn$diabetes_target)
+colnames(Roc5) <- c("P(diabetes)", "diabetes")
+#test 데이터 셋 tpr과 fpr
+TPR3 <- length(which(Roc5$diabetes==1))
+FPR3 <- length(which(Roc5$diabetes==0))
+TPR_FPR2 <- cbind(0,0)
+colnames(TPR_FPR2) <- c("TPR","FPR")
+TPR4 = 0 
+FPR4 = 0
+for(i in 1:nrow(Roc5)){
+  if(Roc5[i,2]==1){
+    TPR4 <- TPR4 + 1
+  }else{
+    FPR4 <- FPR4 + 1
+  }
+  TPR_tmp2 <- TPR4/TPR3
+  FPR_tmp2 <- FPR4/FPR3
+  TPR_FPR_tmp2 <- data.frame(TPR_tmp2,FPR_tmp2)
+  colnames(TPR_FPR_tmp2) <- c("TPR","FPR")
+  TPR_FPR2 <- rbind(TPR_FPR2,TPR_FPR_tmp2)
+}
+#ROC 생성 
+initial2 <- c("0","0")
+Roc6 <- rbind(initial2,Roc5)
+Roc6
+#TPR과 FPR을 묶어주기 
+ROC_data2 <- data.frame(Roc6,TPR_FPR2)
+colnames(ROC_data2) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+ROC_data2
+#ROC 그래프 그리기 
+ggplot(data = ROC_data2, aes(x=`FPR(1-Specificity)`,y=`TPR(Sensitivity)`))+geom_line(color="red")+geom_abline(color = "blue", linetype = "dashed")
+#AUROC 계산을 위한 코드 
+TPR_FPR2 %>%
+  arrange(FPR) %>%
+  mutate(area_rectangle = (lead(FPR)-FPR)*pmin(TPR,lead(TPR)),
+         area_triangle = 0.5 * (lead(FPR)-FPR)*abs(TPR-lead(TPR))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+
+
+
+#Q7 상관관게 높은 변수 제외시키기
+#이상치가 높은 변수 Age (8번 인덱스) 제거해주기
+input_idx1 <- c(1,2,3,4,6)
+diabetes_input1 <- diabetes[, input_idx1]
+diabetes_target <- as.factor(diabetes[,target_idx])
+diabetes_data_new <- data.frame(diabetes_target, diabetes_input1)
+
+#데이터 분할해주기 
+set.seed(12345)
+trn_idx_new <- sample(1:nrow(diabetes_data_new), round(0.7*nrow(diabetes_data_new)))
+diabetes_trn_new <- diabetes_data_new[trn_idx_new,] 
+diabetes_tst_new <- diabetes_data_new[-trn_idx_new,]
+
+#로지스틱 회귀분석 실행 코드 
+full_lr2 <- glm(diabetes_target ~., family=binomial, diabetes_trn_new)
+summary(full_lr2)
+
+#Q7-2. 새로운 데이터 evaluation
+#Test the model and evaluation
+lr_response3 <- predict(full_lr2, type="response", newdata=diabetes_tst_new)
+lr_target3 <- diabetes_tst_new$diabetes_target
+lr_predicted3 <- rep(0, length(lr_target3))
+lr_predicted3[which(lr_response3 >=0.5)] <- 1
+cm_full2 <- table(lr_target3, lr_predicted3)
+cm_full2
+#performance Evaluation Function
+perf_eval3<- function(cm){
+  #True Positive Rate: TPR
+  TPR <- cm[2,2]/sum(cm[2,])
+  #Precision
+  PRE <- cm[2,2]/sum(cm[,2])
+  #True Negative Rate: TNR
+  TNR <- cm[1,1]/sum(cm[1,])
+  #Simple Accuracy
+  ACC <- (cm[1,1]+cm[2,2])/sum(cm)
+  #Balanced Correction Rate
+  BCR <- sqrt(TPR*TNR)
+  #F1- Measure
+  F1 <- 2*TPR*PRE/(TPR+PRE)
+  
+  return(c(TPR, PRE, TNR, ACC, BCR, F1))
+}
+perf_mat[1,] <- perf_eval3(cm_full2)
+perf_mat
+
+perf_mat[1,] <- perf_eval2(cm_full)
+perf_mat[1,]
+
+#Q7-3
+#AUROC
+#lr_response를 기준으로 내림차순
+Roc7 <- data.frame(lr_response3, diabetes_tst_new$diabetes_target)
+Roc8<- arrange(Roc7, desc(lr_response3),diabetes_tst_new$diabetes_target)
+colnames(Roc8) <- c("P(diabetes)", "diabetes")
+#tpr과 fpr
+TPR5 <- length(which(Roc8$diabetes==1))
+FPR5 <- length(which(Roc8$diabetes==0))
+TPR_FPR3 <- cbind(0,0)
+colnames(TPR_FPR3) <- c("TPR","FPR")
+TPR6 = 0 
+FPR6 = 0
+
+for(i in 1:nrow(Roc8)){
+  if(Roc8[i,2]==1){
+    TPR6 <- TPR6 + 1
+  }else{
+    FPR6 <- FPR6 + 1
+  }
+  TPR_tmp3 <- TPR6/TPR5
+  FPR_tmp3 <- FPR6/FPR5
+  TPR_FPR_tmp3 <- data.frame(TPR_tmp3,FPR_tmp3)
+  colnames(TPR_FPR_tmp3) <- c("TPR","FPR")
+  TPR_FPR3 <- rbind(TPR_FPR3,TPR_FPR_tmp3)
+}
+
+#ROC 생성 
+initial <- c("0","0")
+Roc9 <- rbind(initial,Roc8)
+#TPR과 FPR을 묶어주기 
+ROC_data3 <- data.frame(Roc9,TPR_FPR3)
+colnames(ROC_data3) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+
+#ROC 그래프 그리기 
+ggplot(data = ROC_data3, aes(x=`FPR(1-Specificity)`,y=`TPR(Sensitivity)`))+geom_line(color="red")+geom_abline(color = "blue", linetype = "dashed")
+
+#AUROC 계산을 위한 코드 
+TPR_FPR3 %>%
+  arrange(FPR) %>%
+  mutate(area_rectangle = (lead(FPR)-FPR)*pmin(TPR,lead(TPR)),
+         area_triangle = 0.5 * (lead(FPR)-FPR)*abs(TPR-lead(TPR))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+
+
+
+#Train data set에 대한 AUROC
+lr_response_new <- predict(full_lr2, type="response", newdata=diabetes_trn_new)
+lr_target_new <- diabetes_trn_new $diabetes_target
+lr_predicted_new<- rep(0, length(lr_target_new))
+lr_predicted_new[which(lr_response_new >=0.5)] <- 1
+Roc_1<- data.frame(lr_response_new, diabetes_trn_new$diabetes_target)
+Roc_2<- arrange(Roc_1, desc(lr_response_new),diabetes_trn_new$diabetes_target)
+rownames(Roc_2) <- NULL
+colnames(Roc_2) <- c("P(diabetes)", "diabetes")
+#test 데이터 셋 tpr과 fpr
+TPR_1 <- length(which(Roc_2$diabetes==1))
+FPR_1 <- length(which(Roc_2$diabetes==0))
+TPR_FPR_1 <- cbind(0,0)
+colnames(TPR_FPR_1) <- c("TPR","FPR")
+TPR_2 = 0 
+FPR_2 = 0
+for(i in 1:nrow(Roc_2)){
+  if(Roc_2[i,2]==1){
+    TPR_2 <- TPR_2 + 1
+  }else{
+    FPR_2 <- FPR_2 + 1
+  }
+  TPR_tmp_1 <- TPR_2/TPR_1
+  FPR_tmp_1 <- FPR_2/FPR_1
+  TPR_FPR_tmp_1 <- data.frame(TPR_tmp_1,FPR_tmp_1)
+  colnames(TPR_FPR_tmp_1) <- c("TPR","FPR")
+  TPR_FPR_1 <- rbind(TPR_FPR_1,TPR_FPR_tmp_1)
+}
+#ROC 생성 
+initial4 <- c("0","0")
+Roc_3<- rbind(initial4,Roc_2)
+#TPR과 FPR을 묶어주기 
+ROC_data_1 <- data.frame(Roc_3,TPR_FPR_1)
+colnames(ROC_data_1) <- c("P(diabetes)","diabetes","TPR(Sensitivity)","FPR(1-Specificity)")
+ROC_data_1
+#ROC 그래프 그리기 
+ggplot(data = ROC_data_1, aes(x=`FPR(1-Specificity)`,y=`TPR(Sensitivity)`))+geom_line(color="red")+geom_abline(color = "blue", linetype = "dashed")
+#AUROC 계산을 위한 코드 
+TPR_FPR_1 %>%
+  arrange(FPR) %>%
+  mutate(area_rectangle = (lead(FPR)-FPR)*pmin(TPR,lead(TPR)),
+         area_triangle = 0.5 * (lead(FPR)-FPR)*abs(TPR-lead(TPR))) %>%
+  summarise(area = sum(area_rectangle + area_triangle, na.rm = TRUE))
+
+
+#Q[8]
+#Pesudo R2
+install.packages("caret")
+library(pscl)
+pR2(full_lr)
+ㄹ
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
